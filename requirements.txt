@@ -3,7 +3,7 @@ uvicorn[standard]
 requests
 beautifulsoup4
 python-jose[cryptography]
-passlib[bcrypt]
+bcrypt
 serpapi
 playwright
 pydantic
