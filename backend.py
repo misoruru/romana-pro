@@ -1,8 +1,8 @@
 """
-RomânăPro Backend — FastAPI + SQLite (для Render.com)
+RomânăPro Backend — FastAPI + SQLite (Render.com)
 """
 
-import os, re, sqlite3
+import os, re, sqlite3, bcrypt
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,6 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
@@ -22,21 +21,12 @@ GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
 SECRET_KEY        = os.getenv("SECRET_KEY", "romana-pro-super-secret-change-me")
 ALGORITHM         = "HS256"
 TOKEN_EXPIRE_DAYS = 30
-# На Render файлы хранятся в /tmp (ephemeral) или в persistent disk
-# Для бесплатного плана используем /tmp — данные сбрасываются при рестарте
-# Для сохранения данных подключи Render Disk ($7/мес) и смени путь на /data/romana.db
-DB_PATH = os.getenv("DB_PATH", "/tmp/romana.db")
+DB_PATH           = os.getenv("DB_PATH", "/tmp/romana.db")
 
-pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
 app = FastAPI(title="RomânăPro API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 def get_db():
@@ -48,11 +38,11 @@ def init_db():
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email    TEXT UNIQUE NOT NULL,
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            username      TEXT UNIQUE NOT NULL,
+            email         TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS vocab (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,11 +69,11 @@ def init_db():
 init_db()
 
 # ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
-def hash_password(p: str) -> str:
-    return pwd_context.hash(p)
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password[:72].encode(), bcrypt.gensalt()).decode()
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return bcrypt.checkpw(plain[:72].encode(), hashed.encode())
 
 def create_token(user_id: int, username: str) -> str:
     exp = datetime.utcnow() + timedelta(days=TOKEN_EXPIRE_DAYS)
@@ -97,6 +87,7 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme
         return {"id": int(p["sub"]), "username": p["username"]}
     except JWTError:
         raise HTTPException(status_code=401, detail="Токен недействителен")
+
 
 # ─── GROQ CALL ────────────────────────────────────────────────────────────────
 def groq(prompt: str, system: str = "", temperature: float = 0.3, max_tokens: int = 2000) -> str:
@@ -588,5 +579,4 @@ def translate_word(req: TranslateRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    print(f"RomânăPro Backend — port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
