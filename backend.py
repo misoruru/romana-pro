@@ -1,93 +1,33 @@
 """
-RomânăPro Backend — FastAPI + SQLite (Render.com)
+RomânăPro Backend — FastAPI
+Запуск:
+  pip install fastapi uvicorn groq serpapi playwright beautifulsoup4 requests
+  playwright install chromium
+  python backend.py
 """
 
-import os, re, sqlite3, bcrypt
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends
+import os, re, time, asyncio
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional
 import requests
 from bs4 import BeautifulSoup
-from jose import jwt, JWTError
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
-GROQ_API_KEY      = os.getenv("GROQ_API_KEY", "")
-SERP_API_KEY      = os.getenv("SERP_API_KEY", "")
-GROQ_MODEL        = "llama-3.3-70b-versatile"
-GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
-SECRET_KEY        = os.getenv("SECRET_KEY", "romana-pro-super-secret-change-me")
-ALGORITHM         = "HS256"
-TOKEN_EXPIRE_DAYS = 30
-DB_PATH           = os.getenv("DB_PATH", "/tmp/romana.db")
-
-bearer_scheme = HTTPBearer(auto_error=False)
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "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")
+SERP_API_KEY   = os.getenv("SERP_API_KEY", "9ffcc5cb39a6d75aeb10d5d42ac4c5d23be8a09ffa8f9251be83238abe3aa063")
+GROQ_MODEL     = "llama-3.3-70b-versatile"   # mai bun decât 8b pentru analiză literară
+GROQ_URL       = "https://api.groq.com/openai/v1/chat/completions"
 
 app = FastAPI(title="RomânăPro API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# ─── DATABASE ─────────────────────────────────────────────────────────────────
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            username      TEXT UNIQUE NOT NULL,
-            email         TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at    TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS vocab (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            word        TEXT NOT NULL,
-            translation TEXT NOT NULL,
-            stage       TEXT DEFAULT 'învăț',
-            level       INTEGER DEFAULT 0,
-            next_review INTEGER DEFAULT 0,
-            ok_count    INTEGER DEFAULT 0,
-            UNIQUE(user_id, word)
-        );
-        CREATE TABLE IF NOT EXISTS barem (
-            user_id  INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            figuri   TEXT,
-            motive   TEXT,
-            personaj TEXT
-        );
-    """)
-    conn.commit()
-    conn.close()
-    print(f"[db] SQLite ready at {DB_PATH}")
-
-init_db()
-
-# ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password[:72].encode(), bcrypt.gensalt()).decode()
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain[:72].encode(), hashed.encode())
-
-def create_token(user_id: int, username: str) -> str:
-    exp = datetime.utcnow() + timedelta(days=TOKEN_EXPIRE_DAYS)
-    return jwt.encode({"sub": str(user_id), "username": username, "exp": exp}, SECRET_KEY, algorithm=ALGORITHM)
-
-def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
-    if not creds:
-        raise HTTPException(status_code=401, detail="Не авторизован")
-    try:
-        p = jwt.decode(creds.credentials, SECRET_KEY, algorithms=[ALGORITHM])
-        return {"id": int(p["sub"]), "username": p["username"]}
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Токен недействителен")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ─── GROQ CALL ────────────────────────────────────────────────────────────────
 def groq(prompt: str, system: str = "", temperature: float = 0.3, max_tokens: int = 2000) -> str:
@@ -234,32 +174,7 @@ class GramCheckRequest(BaseModel):
 
 class TranslateRequest(BaseModel):
     word: str
-    target_lang: str
-
-class RegisterRequest(BaseModel):
-    username: str
-    email: str
-    password: str
-
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-class VocabCard(BaseModel):
-    word: str
-    translation: str
-    stage: str = "învăț"
-    level: int = 0
-    next_review: int = 0
-    ok_count: int = 0
-
-class VocabSyncRequest(BaseModel):
-    cards: list[VocabCard]
-
-class BaremSaveRequest(BaseModel):
-    figuri: str
-    motive: str
-    personaj: str
+    target_lang: str  # ru | en
 
 
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
@@ -267,104 +182,6 @@ class BaremSaveRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "model": GROQ_MODEL}
-
-
-# ─── AUTH ─────────────────────────────────────────────────────────────────────
-
-@app.post("/auth/register")
-def register(req: RegisterRequest):
-    if len(req.username.strip()) < 3:
-        raise HTTPException(400, "Имя пользователя минимум 3 символа")
-    if len(req.password) < 6:
-        raise HTTPException(400, "Пароль минимум 6 символов")
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?,?,?)",
-            (req.username.strip(), req.email.strip().lower(), hash_password(req.password))
-        )
-        conn.commit()
-        uid = conn.execute("SELECT id FROM users WHERE email=?", (req.email.strip().lower(),)).fetchone()["id"]
-        return {"token": create_token(uid, req.username.strip()), "username": req.username.strip(), "user_id": uid}
-    except sqlite3.IntegrityError as e:
-        if "username" in str(e):
-            raise HTTPException(400, "Это имя уже занято")
-        raise HTTPException(400, "Этот email уже зарегистрирован")
-    finally:
-        conn.close()
-
-
-@app.post("/auth/login")
-def login(req: LoginRequest):
-    conn = get_db()
-    try:
-        u = conn.execute("SELECT * FROM users WHERE email=?", (req.email.strip().lower(),)).fetchone()
-        if not u or not verify_password(req.password, u["password_hash"]):
-            raise HTTPException(401, "Неверный email или пароль")
-        return {"token": create_token(u["id"], u["username"]), "username": u["username"], "user_id": u["id"]}
-    finally:
-        conn.close()
-
-
-@app.get("/auth/me")
-def me(user=Depends(get_current_user)):
-    return {"user_id": user["id"], "username": user["username"]}
-
-
-# ─── VOCAB ────────────────────────────────────────────────────────────────────
-
-@app.get("/vocab")
-def vocab_get(user=Depends(get_current_user)):
-    conn = get_db()
-    try:
-        rows = conn.execute("SELECT * FROM vocab WHERE user_id=? ORDER BY rowid", (user["id"],)).fetchall()
-        return {"cards": [{"id": r["id"], "word": r["word"], "translation": r["translation"],
-                           "stage": r["stage"], "level": r["level"],
-                           "nextReview": r["next_review"], "ok": r["ok_count"]} for r in rows]}
-    finally:
-        conn.close()
-
-
-@app.post("/vocab/sync")
-def vocab_sync(req: VocabSyncRequest, user=Depends(get_current_user)):
-    conn = get_db()
-    try:
-        conn.execute("DELETE FROM vocab WHERE user_id=?", (user["id"],))
-        for c in req.cards:
-            conn.execute(
-                "INSERT OR REPLACE INTO vocab (user_id,word,translation,stage,level,next_review,ok_count) VALUES (?,?,?,?,?,?,?)",
-                (user["id"], c.word, c.translation, c.stage, c.level, c.next_review, c.ok_count)
-            )
-        conn.commit()
-        return {"ok": True, "count": len(req.cards)}
-    finally:
-        conn.close()
-
-
-# ─── BAREM ────────────────────────────────────────────────────────────────────
-
-@app.get("/barem/user")
-def barem_get(user=Depends(get_current_user)):
-    conn = get_db()
-    try:
-        r = conn.execute("SELECT * FROM barem WHERE user_id=?", (user["id"],)).fetchone()
-        return {"figuri": r["figuri"], "motive": r["motive"], "personaj": r["personaj"]} if r else None
-    finally:
-        conn.close()
-
-
-@app.post("/barem/user")
-def barem_save(req: BaremSaveRequest, user=Depends(get_current_user)):
-    conn = get_db()
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO barem (user_id,figuri,motive,personaj) VALUES (?,?,?,?)",
-            (user["id"], req.figuri, req.motive, req.personaj)
-        )
-        conn.commit()
-        return {"ok": True}
-    finally:
-        conn.close()
 
 
 @app.post("/texte/generate")
@@ -442,37 +259,89 @@ Feedback în română (5-6 propoziții): puncte forte, ce lipsește, nota 1-10."
 
 @app.post("/bac/generate")
 def bac_generate(req: BACRequest):
-    """Generează exercițiu BAC: figuri | motive | personaj"""
+    """Generează exercițiu BAC conform baremelor 2024 — toate tipurile"""
     import json
 
-    if req.type == "figuri":
-        # Caută fragment real online
-        results = serp_search("fragment literar figuri de stil metafora personificare poezie română", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează un exercițiu BAC de figuri de stil. Context din surse online: {snippets[:500]}
+    SYS = "Ești profesor de română BAC. Răspunzi STRICT în JSON valid, fără markdown, fără text în afara JSON."
 
-STRICT JSON fără text în afară:
-{{"fragment":"fragment literar original 4-8 versuri sau 4-5 propoziții cu 2-3 figuri de stil clare","sursa":"Titlu — Autor","figuri":[{{"figura":"metaforă/personificare/epitet/etc","exemplu":"citat exact din fragment","efect":"efectul artistic explicat pentru BAC"}}]}}"""
+    # ── Item 1: Sinonim contextual (4p) ───────────────────────────────────────
+    if req.type == "sinonim":
+        prompt = """Generează un exercițiu BAC Item 1 — sinonim contextual.
+Creează o frază literară în care un cuvânt are sens contextual specific.
+STRICT JSON:
+{"fragment":"fraza literară completă de 15-25 cuvinte","sursa":"Titlu — Autor (opera din care e inspirată)","cuvant":"cuvântul țintă din frază","sinonime":["sin1","sin2","sin3","sin4","sin5","sin6"],"corect":"sinonimul cel mai potrivit contextual","raspunsModel":"enunț argumentativ model 2-3 propoziții: de ce acel sinonim, referire la contextul frazei"}"""
 
+    # ── Item 2: Alt sens al cuvântului (6p) ───────────────────────────────────
+    elif req.type == "sens":
+        prompt = """Generează un exercițiu BAC Item 2 — alt sens al cuvântului.
+Alege un fragment literar scurt cu 3 cuvinte polisemantice interesante.
+STRICT JSON:
+{"fragment":"fragment literar 3-5 propoziții","sursa":"Titlu — Autor","cuvinte":["cuv1","cuv2","cuv3"],"sensInText":{"cuv1":"sensul din text","cuv2":"sensul din text","cuv3":"sensul din text"},"raspunsModel":{"cuv1":"enunț cu alt sens corect și elegant","cuv2":"enunț cu alt sens corect și elegant","cuv3":"enunț cu alt sens corect și elegant"}}"""
+
+    # ── Item 3: Tipul uman (5p) ───────────────────────────────────────────────
+    elif req.type == "tip_uman":
+        results = serp_search("fragment proză română personaj narator tânăr artist intelectual", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 3 — tipul uman al naratorului. Context: {snippets}
+STRICT JSON:
+{{"fragment":"fragment proză la persoana I, 120-180 cuvinte, cu un narator cu personalitate distinctă (tânăr, artist, intelectual, rebel etc.)","sursa":"Titlu — Autor","tipUman":"tipul uman al naratorului (ex: tânărul entuziast, artistul debutant, intelectualul lucid)","citat1":"primul citat relevant din fragment","comentariu1":"comentariu 1-2 propoziții care confirmă tipologia","citat2":"al doilea citat relevant","comentariu2":"comentariu 1-2 propoziții"}}"""
+
+    # ── Item 4: Figura de stil (5p) ───────────────────────────────────────────
+    elif req.type == "figuri":
+        results = serp_search("fragment literar figuri de stil metafora personificare epitet poezie română BAC", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 4 — comentarea unei figuri de stil. Context: {snippets}
+STRICT JSON:
+{{"fragment":"fragment literar 4-8 versuri sau 3-5 propoziții cu figuri de stil clare","sursa":"Titlu — Autor","figuri":[{{"figura":"metaforă/epitet/personificare/comparație/simbol","exemplu":"citatul exact din fragment","structura":"cum e construită figura (elementele ei)","efect":"sugestia contextuală — ce exprimă, ce sentimente transmite, ce idee accentuează"}}]}}"""
+
+    # ── Item 5: Portretul moral (5p) ──────────────────────────────────────────
+    elif req.type == "portret":
+        results = serp_search("fragment proză română personaj trăsături morale caracter BAC", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 5 — portretul moral. Context: {snippets}
+STRICT JSON:
+{{"fragment":"fragment proză 120-160 cuvinte din care se pot deduce trăsături morale ale unui personaj","sursa":"Titlu — Autor","personaj":"numele personajului","trasatura1":"prima trăsătură morală (fermitate/sensibilitate/inteligență/orgoliu/luciditate etc.)","exemplu1":"exemplul din text care ilustrează trăsătura 1","trasatura2":"a doua trăsătură morală","exemplu2":"exemplul din text care ilustrează trăsătura 2","raspunsModel":"portret moral complet 6-7 rânduri: intro + 2 trăsături cu exemple + concluzie"}}"""
+
+    # ── Item 6: Starea de spirit a eului liric (4p) ───────────────────────────
+    elif req.type == "stare_spirit":
+        results = serp_search("poezie română eu liric dor melancolie solitudine natura sentiment", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 6 — starea de spirit a eului liric. Context: {snippets}
+STRICT JSON:
+{{"fragment":"poezie sau fragment liric 6-12 versuri cu stare de spirit clară (dor, solitudine, alean, exuberanță, melancolie)","sursa":"Titlu — Autor","stare":"starea de spirit a eului liric","modalitate":"procedeul prin care se exprimă (imagini, figuri de stil, lexic, ritm)","raspunsModel":"interpretare completă 4-6 propoziții: numire stare + explicare + referire la text"}}"""
+
+    # ── Item 7: Atitudinea personajelor (5p) ──────────────────────────────────
+    elif req.type == "atitudine":
+        results = serp_search("fragment proză română conflict personaje atitudine dezaprobare invidie admirație BAC", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 7 — atitudinea personajelor. Context: {snippets}
+STRICT JSON:
+{{"fragment":"fragment proză 140-180 cuvinte cu interacțiune clară între personaje unde se poate determina o atitudine (dezaprobare, invidie, admirație, ostilitate, ironie)","sursa":"Titlu — Autor","protagonist":"personajul central","atitudine":"atitudinea celorlalți față de protagonist (numită exact: dezaprobare/invidie/admirație etc.)","citat1":"primul citat care indică atitudinea","comentariu1":"comentariu 1-2 propoziții","citat2":"al doilea citat","comentariu2":"comentariu 1-2 propoziții","raspunsModel":"răspuns model complet 6-7 rânduri"}}"""
+
+    # ── Item 8: Motiv literar comparativ (6p) ─────────────────────────────────
     elif req.type == "motive":
-        results = serp_search("motiv literar luna codrul natura iubirea moartea poezie română", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează exercițiu BAC despre motiv literar. Context: {snippets[:500]}
-
+        results = serp_search("motiv literar verticalitate morală demnitate condiție umană poezie proză română", num=3)
+        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])[:400]
+        prompt = f"""Generează exercițiu BAC Item 8 — motiv literar comparativ. Context: {snippets}
 STRICT JSON:
-{{"titlu":"titlul operei","autor":"autorul","fragment":"fragment/poezie 6-10 versuri","motiv":"numele motivului literar","explicatieModel":"comentariu complet nivel BAC 150 cuvinte: identificare, prezentare, semnificație, legătură cu tema"}}"""
+{{"fragment":"fragment literar 80-120 cuvinte cu un motiv literar evident","sursa":"Titlu — Autor","motiv":"numele motivului literar (verticalitate morală/condiția artistului/natura/iubirea/moartea/timpul)","semnificatieInText":"cum se manifestă și ce semnifică motivul în textul dat (2-3 propoziții)","indiciu":"citatul/indiciul concret din text prin care se edifică motivul","textComparatie":"titlul operei pentru comparație","autorComparatie":"autorul operei pentru comparație","citatComparatie":"citat relevant din opera de comparație","interpretareComparatie":"cum apare același motiv în opera de comparație (2-3 propoziții)"}}"""
 
+    # ── Item 9: Valoarea stilistică a punctuației (4p) ────────────────────────
+    elif req.type == "punctuatie":
+        prompt = """Generează exercițiu BAC Item 9 — valoarea stilistică a semnelor de punctuație.
+STRICT JSON:
+{"secventa":"o secvență de 2-3 propoziții cu semne de exclamare și/sau întrebare cu valoare stilistică clară","sursa":"Titlu — Autor","semn1":"primul semn de punctuație (exclamare/întrebare)","tip1":"tipul enunțului (exclamativ/interogativ)","valoare1":"valoarea stilistică — ce exprimă (certitudine/mândrie/indignare/nedumerire/implicare afectivă etc.)","semn2":"al doilea semn","tip2":"tipul enunțului","valoare2":"valoarea stilistică","raspunsModel":"răspuns model complet în 2 enunțuri dezvoltate per semn"}"""
+
+    # ── Item 12: Eseu argumentativ (20p) ──────────────────────────────────────
     elif req.type == "personaj":
-        results = serp_search("personaj principal tipologie literară Ion Moromeți Vitoria caracterizare BAC", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează exercițiu BAC despre tipul personajului. Context: {snippets[:500]}
-
+        prompt = """Generează exercițiu BAC Item 12 — eseu argumentativ.
 STRICT JSON:
-{{"opera":"titlul operei","autor":"autorul","personaj":"numele personajului","tipologie":"tipul personajului (erou tragic, personaj realist, etc)","scena":"scenă reprezentativă 120-150 cuvinte cu dialog sau descriere","explicatieModel":"comentariu model complet nivel BAC 8 puncte: tipologie, 2 trăsături cu ilustrare, evoluție, relații, concluzie"}}"""
-    else:
-        raise HTTPException(status_code=400, detail="type trebuie să fie: figuri | motive | personaj")
+{"asertiune":"o aserțiune filozofică/morală provocatoare de 15-25 cuvinte despre valori umane, demnitate, destin, condiție umană (similar cu Aristotel, Eminescu, Blaga etc.)","autor":"autorul aserțiunii","tema":"tema generală a eseului","teza1":"prima teză posibilă","argument1":"argumentul pentru teza 1","text1":"opera literară română care ilustrează teza 1 (titlu + autor)","teza2":"a doua teză distinctă","argument2":"argumentul pentru teza 2","text2":"opera literară română care ilustrează teza 2 (titlu + autor)","raspunsModel":"plan detaliat de eseu: introducere (opinie clară) + 2 paragrafe teze+argumente+referințe literare + concluzie — 250 cuvinte"}"""
 
-    raw = groq(prompt, system="Răspunzi STRICT în JSON valid fără markdown.", temperature=0.4)
+    else:
+        raise HTTPException(status_code=400, detail=f"Tip necunoscut: {req.type}. Valide: sinonim|sens|tip_uman|figuri|portret|stare_spirit|atitudine|motive|punctuatie|personaj")
+
+    raw = groq(prompt, system=SYS, temperature=0.4, max_tokens=1800)
     clean = re.sub(r"```json|```", "", raw).strip()
     match = re.search(r'\{.*\}', clean, re.DOTALL)
     if not match:
@@ -482,30 +351,70 @@ STRICT JSON:
     try:
         return json.loads(match.group())
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"JSON error: {e}")
+        raise HTTPException(status_code=500, detail=f"JSON error: {e}\nRaw: {clean[:200]}")
 
 
 @app.post("/bac/eval")
 def bac_eval(req: BACEvalRequest):
-    """Evaluează răspunsul elevului la exercițiu BAC"""
-    if req.type == "figuri":
-        model = "\n".join([f'{f["figura"]}: „{f["exemplu"]}" — {f["efect"]}' for f in req.content.get("figuri", [])])
+    """Evaluează răspunsul elevului la exercițiu BAC — toate tipurile 2024"""
+
+    # Construiește răspunsul model în funcție de tip
+    c = req.content
+    if req.type == "sinonim":
+        model = f"Sinonimul corect: {c.get('corect','')}\n{c.get('raspunsModel','')}"
+    elif req.type == "sens":
+        rm = c.get("raspunsModel", {})
+        model = "\n".join([f"{k}: {v}" for k,v in rm.items()]) if isinstance(rm, dict) else str(rm)
+    elif req.type == "tip_uman":
+        model = f"Tipul uman: {c.get('tipUman','')}\nCitat 1: {c.get('citat1','')} — {c.get('comentariu1','')}\nCitat 2: {c.get('citat2','')} — {c.get('comentariu2','')}"
+    elif req.type == "figuri":
+        model = "\n".join([f'{f.get("figura","")}: „{f.get("exemplu","")}"\nStructură: {f.get("structura","")}\nEfect: {f.get("efect","")}' for f in c.get("figuri", [])])
+    elif req.type == "portret":
+        model = f"Trăsătură 1: {c.get('trasatura1','')} — {c.get('exemplu1','')}\nTrăsătură 2: {c.get('trasatura2','')} — {c.get('exemplu2','')}\n{c.get('raspunsModel','')}"
+    elif req.type == "stare_spirit":
+        model = f"Starea: {c.get('stare','')}\nModalitate: {c.get('modalitate','')}\n{c.get('raspunsModel','')}"
+    elif req.type == "atitudine":
+        model = f"Atitudinea: {c.get('atitudine','')}\nCitat 1: {c.get('citat1','')} — {c.get('comentariu1','')}\nCitat 2: {c.get('citat2','')} — {c.get('comentariu2','')}\n{c.get('raspunsModel','')}"
+    elif req.type == "motive":
+        model = f"Motivul: {c.get('motiv','')}\nÎn text: {c.get('semnificatieInText','')}\nIndiciu: {c.get('indiciu','')}\nComparație: {c.get('textComparatie','')} de {c.get('autorComparatie','')}\n{c.get('interpretareComparatie','')}\nCitat: {c.get('citatComparatie','')}"
+    elif req.type == "punctuatie":
+        model = f"{c.get('semn1','')}: {c.get('tip1','')} — {c.get('valoare1','')}\n{c.get('semn2','')}: {c.get('tip2','')} — {c.get('valoare2','')}\n{c.get('raspunsModel','')}"
+    elif req.type == "personaj":
+        model = f"Aserțiune: {c.get('asertiune','')}\nTeză 1: {c.get('teza1','')} + {c.get('argument1','')} ({c.get('text1','')})\nTeză 2: {c.get('teza2','')} + {c.get('argument2','')} ({c.get('text2','')})\n{c.get('raspunsModel','')}"
     else:
-        model = req.content.get("explicatieModel", "")
+        model = c.get("explicatieModel", c.get("raspunsModel", str(c)))
+
+    # Determină punctajul maxim
+    punctaje = {"sinonim":4,"sens":6,"tip_uman":5,"figuri":5,"portret":5,"stare_spirit":4,"atitudine":5,"motive":6,"punctuatie":4,"personaj":20}
+    max_p = punctaje.get(req.type, 10)
 
     raw = groq(
-        f"""Examinator BAC română. Evaluează răspunsul conform baremului.
-BAREM:\n{req.barem}
-RĂSPUNS MODEL:\n{model}
-RĂSPUNS ELEV:\n"{req.user_answer}"
-Acordă punctaj specific pe fiecare criteriu din barem, explică ce a lipsit. Menționează punctajul total (ex: 4/5p). Română, 150 cuvinte max.""",
-        temperature=0.2
+        f"""Ești examinator oficial BAC română 2024. Evaluează PUNCT CU PUNCT conform baremului.
+
+TIP EXERCIȚIU: {req.type} ({max_p} puncte maxim)
+
+BAREM OFICIAL:
+{req.barem}
+
+RĂSPUNS MODEL COMPLET:
+{model}
+
+RĂSPUNS ELEV:
+"{req.user_answer}"
+
+Evaluare DETALIATĂ:
+1. Parcurge fiecare criteriu din barem — a primit punctele sau nu? De ce?
+2. Citează din răspunsul elevului ce a acoperit și ce nu.
+3. CE LIPSEA EXACT pentru punctaj maxim — fii specific.
+4. PUNCTAJ FINAL: X/{max_p}p cu calcul detaliat pe criterii.
+
+Fii SEVER și PRECIS. Minimum 120 cuvinte.""",
+        temperature=0.15,
+        max_tokens=700
     )
 
-    # Extrage scorul
-    score_match = re.search(r'(\d+)\s*/\s*(\d+)\s*p', raw)
+    score_match = re.search(r'(\d+)\s*/\s*\d+\s*p', raw)
     score = int(score_match.group(1)) if score_match else None
-
     return {"feedback": raw, "score": score}
 
 
@@ -578,5 +487,10 @@ def translate_word(req: TranslateRequest):
 # ─── RUN ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print("=" * 50)
+    print("RomânăPro Backend")
+    print(f"Model: {GROQ_MODEL}")
+    print("Setează GROQ_API_KEY în environment!")
+    print("http://localhost:8000")
+    print("=" * 50)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
