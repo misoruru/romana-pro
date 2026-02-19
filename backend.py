@@ -597,13 +597,18 @@ Răspuns în română, structurat, max 200 cuvinte.""",
 
 @app.post("/translate")
 def translate_word(req: TranslateRequest):
-    """Traduce un cuvânt românesc"""
+    """Traduce un cuvânt sau o frază românească"""
     lang_name = "rusă" if req.target_lang == "ru" else "engleză"
-    tr = groq(
-        f'Traduce cuvântul românesc "{req.word}" în {lang_name}. Răspunde DOAR cu traducerea (1-4 cuvinte), fără explicații.',
-        temperature=0.1,
-        max_tokens=20
-    )
+    word_count = len(req.word.split())
+
+    if word_count == 1:
+        prompt = f'Traduce cuvântul românesc "{req.word}" în {lang_name}. Răspunde DOAR cu traducerea (1-4 cuvinte), fără explicații.'
+        max_tok = 20
+    else:
+        prompt = f'Traduce următoarea frază din română în {lang_name}. Răspunde DOAR cu traducerea, fără explicații, fără ghilimele.\nFrază: {req.word}'
+        max_tok = 200
+
+    tr = groq(prompt, temperature=0.1, max_tokens=max_tok)
     return {"word": req.word, "translation": tr.strip()}
 
 
