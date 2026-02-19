@@ -6,13 +6,51 @@ RomânăPro Backend — FastAPI
   python backend.py
 """
 
-import os, re, time, asyncio
+import os, re, time, asyncio, json, random
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import requests
 from bs4 import BeautifulSoup
+
+# ─── BAZA DE DATE CU POEZII REALE ─────────────────────────────────────────────
+def load_poezii():
+    """Incarca poezii din poezii.json daca exista, altfel lista de fallback"""
+    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poezii.json")
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                poems = json.load(f)
+            with_text    = [p for p in poems if p.get("text","").strip()]
+            without_text = [p for p in poems if not p.get("text","").strip()]
+            print(f"[poezii] Incarcate: {len(with_text)} cu text, {len(without_text)} fara text")
+            return with_text, without_text
+        except Exception as e:
+            print(f"[poezii] Eroare la citire: {e}")
+    return [], []
+
+POEMS_WITH_TEXT, POEMS_WITHOUT_TEXT = load_poezii()
+
+POEMS_FALLBACK = [
+    {"titlu":"Plumb",                          "autor":"George Bacovia",   "motiv":"solitudine / moarte / apasare",        "text":""},
+    {"titlu":"Floare albastra",                "autor":"Mihai Eminescu",   "motiv":"iubire / natura / dor",                "text":""},
+    {"titlu":"Eu nu strivesc corola de minuni","autor":"Lucian Blaga",     "motiv":"mister / cunoastere / lumina",         "text":""},
+    {"titlu":"Testament",                      "autor":"Tudor Arghezi",    "motiv":"creatie / mostenire / cuvantul",       "text":""},
+    {"titlu":"Leoaica tanara, iubirea",        "autor":"Nichita Stanescu", "motiv":"iubire / transfigurare / putere",      "text":""},
+    {"titlu":"Limba noastra",                  "autor":"Alexei Mateevici", "motiv":"limba / identitate / patriotism",      "text":""},
+    {"titlu":"Moartea caprioarei",             "autor":"Nicolae Labis",    "motiv":"moarte / natura / vinovatie",          "text":""},
+]
+
+def pick_poem(prefer_text=True):
+    """Alege o poezie aleatorie - prefera cele cu text real"""
+    if prefer_text and POEMS_WITH_TEXT:
+        return random.choice(POEMS_WITH_TEXT)
+    all_poems = POEMS_WITH_TEXT + POEMS_WITHOUT_TEXT
+    if all_poems:
+        return random.choice(all_poems)
+    return random.choice(POEMS_FALLBACK)
+
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "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")
@@ -188,6 +226,7 @@ def health():
 def texte_generate(req: TextRequest):
     """Generează rezumat + 10 întrebări BAC pentru o operă literară"""
 
+    # Pasul 1: Caută text real din internet
     print(f"[texte] Caut text pentru: {req.title} de {req.author}")
     scribd_url = find_scribd_url(f"{req.title} {req.author}")
     source_text = ""
@@ -200,7 +239,9 @@ def texte_generate(req: TextRequest):
         print("[texte] Scribd eșuat, folosesc snippet-uri din Google")
         source_text = get_text_fallback_snippets(req.title, req.author)
 
+    # Pasul 2: Generează cu Groq
     context = f"Text/informații găsite online:\n{source_text[:3000]}\n\n" if source_text else ""
+
     system = "Ești profesor de română pentru bacalaureat. Răspunzi STRICT în JSON valid, fără text în afara JSON-ului, fără markdown."
 
     prompt = f"""{context}Opera: "{req.title}" de {req.author}.
@@ -216,87 +257,29 @@ Generează JSON cu structura exactă:
     {{"id":4,"tip":"grila","intrebare":"întrebare despre context/epocă","variante":["A) ","B) ","C) ","D) "],"corect":"D"}},
     {{"id":5,"tip":"grila","intrebare":"întrebare despre simboluri/motive","variante":["A) ","B) ","C) ","D) "],"corect":"A"}},
     {{"id":6,"tip":"grila","intrebare":"întrebare dificilă despre structura operei","variante":["A) ","B) ","C) ","D) "],"corect":"C"}},
-    {{"id":7,"tip":"deschis","intrebare":"Analizați tipul uman al personajului principal.","raspunsModel":"răspuns model complet nivel BAC 150 cuvinte"}},
-    {{"id":8,"tip":"deschis","intrebare":"Identificați și comentați motivele principale cu argumente din text.","raspunsModel":"răspuns model complet"}},
-    {{"id":9,"tip":"deschis","intrebare":"Prezentați tema operei și motivele literare principale.","raspunsModel":"răspuns model complet"}},
-    {{"id":10,"tip":"deschis","intrebare":"Analizați relația dintre personajele principale și semnificația ei.","raspunsModel":"răspuns model complet"}}
+    {{"id":7,"tip":"deschis","intrebare":"Analizați tipul uman al personajului principal din opera dată, raportându-vă la trăsături, motive și evoluție.","raspunsModel":"răspuns model complet nivel BAC 150 cuvinte"}},
+    {{"id":8,"tip":"deschis","intrebare":"Identificați și comentați motivele principale ale personajului central, cu argumente din text.","raspunsModel":"răspuns model complet"}},
+    {{"id":9,"tip":"deschis","intrebare":"Prezentați tema operei și ilustrați motivele literare principale cu exemple din text.","raspunsModel":"răspuns model complet"}},
+    {{"id":10,"tip":"deschis","intrebare":"Analizați relația dintre personajele principale și semnificația ei în economia operei.","raspunsModel":"răspuns model complet"}}
   ]
 }}
 Completează cu conținut real și specific despre opera "{req.title}"."""
 
     raw = groq(prompt, system=system, max_tokens=2500)
+
+    # Curăță și parsează JSON
     clean = re.sub(r"```json|```", "", raw).strip()
+    # Găsește primul { ... }
     match = re.search(r'\{.*\}', clean, re.DOTALL)
     if not match:
         raise HTTPException(status_code=500, detail="Model nu a returnat JSON valid")
+
     import json
     try:
-        return json.loads(match.group())
+        data = json.loads(match.group())
+        return data
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
-
-
-class SummaryRequest(BaseModel):
-    title: str
-    author: str = ""
-    summary: str  # textul introdus de utilizator
-
-
-@app.post("/texte/from_summary")
-def texte_from_summary(req: SummaryRequest):
-    """Generează întrebări BAC pe baza rezumatului introdus manual de utilizator.
-    NU inventează nimic — folosește STRICT textul primit."""
-    import json
-
-    word_count = len(req.summary.split())
-
-    system = "Ești profesor de română BAC. Răspunzi STRICT în JSON valid, fără text în afara JSON-ului, fără markdown."
-
-    prompt = f"""Ai primit un rezumat/text despre opera literară "{req.title}"{f' de {req.author}' if req.author else ''}.
-
-REZUMATUL/TEXTUL ELEVULUI ({word_count} cuvinte):
-\"\"\"
-{req.summary}
-\"\"\"
-
-INSTRUCȚIUNI STRICTE:
-1. Generează întrebări EXCLUSIV pe baza informațiilor din textul de mai sus.
-2. NU inventa personaje, scene sau informații care nu apar în text.
-3. Toate răspunsurile model trebuie să fie bazate pe textul primit.
-4. Întrebările grila trebuie să aibă răspunsuri corecte care se regăsesc în text.
-5. Întrebările deschise trebuie să ceară analiză a ceea ce e scris în text.
-6. Rezumatul generat trebuie să fie o reformulare elegantă a textului primit (minim 200 cuvinte), NU să adauge informații noi.
-
-Generează JSON:
-{{
-  "rezumat": "reformulare elegantă și completă a textului primit, minim 200 cuvinte, fără informații adăugate",
-  "scribd_url": "",
-  "intrebari": [
-    {{"id":1,"tip":"grila","intrebare":"întrebare despre personajele menționate în text","variante":["A) varianta corectă din text","B) variantă greșită","C) variantă greșită","D) variantă greșită"],"corect":"A"}},
-    {{"id":2,"tip":"grila","intrebare":"întrebare despre evenimentele din text","variante":["A) ","B) ","C) ","D) "],"corect":"B"}},
-    {{"id":3,"tip":"grila","intrebare":"întrebare despre tema/mesajul din text","variante":["A) ","B) ","C) ","D) "],"corect":"C"}},
-    {{"id":4,"tip":"grila","intrebare":"întrebare despre relațiile dintre personaje menționate","variante":["A) ","B) ","C) ","D) "],"corect":"A"}},
-    {{"id":5,"tip":"grila","intrebare":"întrebare dificilă despre detalii din text","variante":["A) ","B) ","C) ","D) "],"corect":"D"}},
-    {{"id":6,"tip":"deschis","intrebare":"Analizați tipul uman al personajului principal pe baza informațiilor din text, menționând cel puțin două trăsături.","raspunsModel":"răspuns model bazat STRICT pe textul dat, 100-150 cuvinte"}},
-    {{"id":7,"tip":"deschis","intrebare":"Identificați și comentați motivele literare principale prezente în text, cu exemple concrete.","raspunsModel":"răspuns model bazat pe textul dat"}},
-    {{"id":8,"tip":"deschis","intrebare":"Prezentați conflictul principal și semnificația lui, conform textului.","raspunsModel":"răspuns model bazat pe textul dat"}},
-    {{"id":9,"tip":"deschis","intrebare":"Comentați relația dintre personajele principale, bazându-vă pe informațiile din text.","raspunsModel":"răspuns model"}},
-    {{"id":10,"tip":"deschis","intrebare":"Formulați un punct de vedere argumentat despre tema centrală a operei, raportându-vă la text.","raspunsModel":"răspuns model complet"}}
-  ]
-}}"""
-
-    raw = groq(prompt, system=system, max_tokens=2500, temperature=0.2)
-    clean = re.sub(r"```json|```", "", raw).strip()
-    match = re.search(r'\{.*\}', clean, re.DOTALL)
-    if not match:
-        raise HTTPException(status_code=500, detail="Model nu a returnat JSON valid")
-    try:
-        return json.loads(match.group())
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"JSON error: {e}")
-
-
-
+        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}\nRaw: {clean[:300]}")
 
 
 @app.post("/texte/check")
@@ -314,43 +297,134 @@ Feedback în română (5-6 propoziții): puncte forte, ce lipsește, nota 1-10."
 
 @app.post("/bac/generate")
 def bac_generate(req: BACRequest):
-    """Generează exercițiu BAC: figuri | motive | personaj"""
-    import json
+    """Generează exercițiu BAC folosind poezii REALE din poezii.json"""
 
+    SYS = "Ești profesor de română BAC. Răspunzi STRICT în JSON valid, fără markdown, fără text în afara JSON."
+
+    poem = pick_poem(prefer_text=True)
+    titlu  = poem["titlu"]
+    autor  = poem["autor"]
+    motiv  = poem.get("motiv", "")
+    text   = poem.get("text", "").strip()
+
+    # Dacă avem textul real, îl includem direct în prompt
+    text_context = f"\nTEXTUL REAL AL POEZIEI (folosește EXACT aceste versuri, nu inventa altele):\n\"\"\"\n{text}\n\"\"\"\n" if text else f"\n(Nu avem textul — scrie versuri autentice cunoscute din această operă)\n"
+
+    # ── figuri de stil ────────────────────────────────────────────────────────
     if req.type == "figuri":
-        # Caută fragment real online
-        results = serp_search("fragment literar figuri de stil metafora personificare poezie română", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează un exercițiu BAC de figuri de stil. Context din surse online: {snippets[:500]}
+        prompt = f"""Opera: „{titlu}" de {autor}. Motiv: {motiv}.
+{text_context}
+Generează exercițiu BAC Item 4 — figuri de stil.
+{"Alege 6-10 versuri DIN TEXTUL DE MAI SUS (copiază exact, nu modifica)." if text else "Scrie un fragment autentic de 6-10 versuri din această poezie."}
+Identifică 2-3 figuri de stil reale din fragment.
 
-STRICT JSON fără text în afară:
-{{"fragment":"fragment literar original 4-8 versuri sau 4-5 propoziții cu 2-3 figuri de stil clare","sursa":"Titlu — Autor","figuri":[{{"figura":"metaforă/personificare/epitet/etc","exemplu":"citat exact din fragment","efect":"efectul artistic explicat pentru BAC"}}]}}"""
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte","figuri":[{{"figura":"tipul figurii","exemplu":"citatul exact din fragment","structura":"cum e construită (ex: metasemia subst X și Y)","efect":"sugestia contextuală — ce exprimă, ce sentiment"}}]}}"""
 
+    # ── motive literare ───────────────────────────────────────────────────────
     elif req.type == "motive":
-        results = serp_search("motiv literar luna codrul natura iubirea moartea poezie română", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează exercițiu BAC despre motiv literar. Context: {snippets[:500]}
+        poem2 = pick_poem(prefer_text=True)
+        while poem2["titlu"] == titlu:
+            poem2 = pick_poem(prefer_text=True)
+        text2 = poem2.get("text","").strip()
+        text2_context = f"\nText real opera 2:\n\"\"\"\n{text2}\n\"\"\"" if text2 else ""
+
+        prompt = f"""Opera 1: „{titlu}" de {autor}. Motiv: {motiv}.
+{text_context}
+Opera 2 pentru comparație: „{poem2['titlu']}" de {poem2['autor']}.{text2_context}
+
+Generează exercițiu BAC Item 8 — motiv literar comparativ.
+{"Alege 6-10 versuri DIN TEXTUL REAL AL OPEREI 1." if text else "Scrie fragment autentic din opera 1."}
 
 STRICT JSON:
-{{"titlu":"titlul operei","autor":"autorul","fragment":"fragment/poezie 6-10 versuri","motiv":"numele motivului literar","explicatieModel":"comentariu complet nivel BAC 150 cuvinte: identificare, prezentare, semnificație, legătură cu tema"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte din opera 1","motiv":"{motiv.split('/')[0].strip()}","semnificatieInText":"cum se manifestă motivul (2-3 propoziții)","indiciu":"citatul concret din text","textComparatie":"{poem2['titlu']}","autorComparatie":"{poem2['autor']}","citatComparatie":"{"fragment din textul real al operei 2" if text2 else "fragment autentic din opera 2"}","interpretareComparatie":"cum apare același motiv acolo","raspunsModel":"răspuns model complet 150 cuvinte"}}"""
 
+    # ── tipul uman ─────────────────────────────────────────────────────────────
+    elif req.type == "tip_uman":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 3 — tipul uman al naratorului/eului liric.
+{"Folosește versuri DIN TEXTUL REAL de mai sus." if text else "Scrie fragment autentic 80-120 cuvinte."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real din operă","tipUman":"tipul uman (tânărul entuziast / artistul debutant / intelectualul lucid / etc.)","citat1":"primul citat real din fragment","comentariu1":"de ce confirmă tipologia","citat2":"al doilea citat real","comentariu2":"comentariu"}}"""
+
+    # ── portretul moral ───────────────────────────────────────────────────────
+    elif req.type == "portret":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 5 — portretul moral.
+{"Folosește versuri DIN TEXTUL REAL de mai sus." if text else "Scrie fragment autentic 100-140 cuvinte."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","personaj":"eul liric / personajul","trasatura1":"trăsătură morală 1","exemplu1":"citat real din text","trasatura2":"trăsătură morală 2","exemplu2":"citat real din text","raspunsModel":"portret moral complet 6-7 rânduri"}}"""
+
+    # ── starea de spirit ──────────────────────────────────────────────────────
+    elif req.type == "stare_spirit":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 6 — starea de spirit a eului liric.
+{"Alege 6-12 versuri DIN TEXTUL REAL." if text else "Scrie fragment autentic de 6-12 versuri."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile reale","stare":"starea de spirit (dor/solitudine/alean/melancolie/exuberanță)","modalitate":"procedeul prin care se exprimă","raspunsModel":"interpretare completă 4-6 propoziții"}}"""
+
+    # ── atitudinea personajelor ───────────────────────────────────────────────
+    elif req.type == "atitudine":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 7 — atitudinea personajelor.
+{"Folosește text DIN FRAGMENTUL REAL de mai sus." if text else "Scrie fragment autentic de proză 130-170 cuvinte."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","protagonist":"personajul central sau eul liric","atitudine":"atitudinea (dezaprobare/invidie/admirație/ostilitate)","citat1":"citat real din fragment","comentariu1":"1-2 propoziții","citat2":"al doilea citat real","comentariu2":"1-2 propoziții","raspunsModel":"răspuns complet 6-7 rânduri"}}"""
+
+    # ── sinonim contextual ────────────────────────────────────────────────────
+    elif req.type == "sinonim":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 1 — sinonim contextual.
+{"Alege o frază DIN TEXTUL REAL." if text else "Alege o frază autentică din operă."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fraza reală 15-25 cuvinte","cuvant":"cuvântul țintă din frază","sinonime":["sin1","sin2","sin3","sin4","sin5"],"corect":"sinonimul cel mai potrivit contextual","raspunsModel":"enunț argumentativ model"}}"""
+
+    # ── alt sens ──────────────────────────────────────────────────────────────
+    elif req.type == "sens":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 2 — alt sens al cuvântului.
+{"Alege un fragment DIN TEXTUL REAL cu 3 cuvinte polisemantice." if text else "Alege fragment autentic 3-5 propoziții."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","cuvinte":["cuv1","cuv2","cuv3"],"sensInText":{{"cuv1":"sensul din text","cuv2":"sensul din text","cuv3":"sensul din text"}},"raspunsModel":{{"cuv1":"enunț cu alt sens","cuv2":"enunț cu alt sens","cuv3":"enunț cu alt sens"}}}}"""
+
+    # ── valoarea punctuației ──────────────────────────────────────────────────
+    elif req.type == "punctuatie":
+        prompt = f"""Opera: „{titlu}" de {autor}.
+{text_context}
+Generează exercițiu BAC Item 9 — valoarea stilistică a punctuației.
+{"Alege secvență DIN TEXTUL REAL cu semne de exclamare și/sau întrebare." if text else "Alege secvență autentică cu semne de punctuație cu valoare stilistică."}
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","secventa":"secvența reală cu semne de punctuație","semn1":"!","tip1":"exclamativ","valoare1":"ce exprimă","semn2":"?","tip2":"interogativ retoric","valoare2":"ce exprimă","raspunsModel":"răspuns în 2 enunțuri dezvoltate per semn"}}"""
+
+    # ── eseu argumentativ ─────────────────────────────────────────────────────
     elif req.type == "personaj":
-        results = serp_search("personaj principal tipologie literară Ion Moromeți Vitoria caracterizare BAC", num=3)
-        snippets = " ".join([r["snippet"] for r in results if r["snippet"]])
-        prompt = f"""Generează exercițiu BAC despre tipul personajului. Context: {snippets[:500]}
+        prompt = f"""Generează exercițiu BAC Item 12 — eseu argumentativ.
+Inspiră-te din tema operei „{titlu}" de {autor} (motiv: {motiv}).
 
 STRICT JSON:
-{{"opera":"titlul operei","autor":"autorul","personaj":"numele personajului","tipologie":"tipul personajului (erou tragic, personaj realist, etc)","scena":"scenă reprezentativă 120-150 cuvinte cu dialog sau descriere","explicatieModel":"comentariu model complet nivel BAC 8 puncte: tipologie, 2 trăsături cu ilustrare, evoluție, relații, concluzie"}}"""
-    else:
-        raise HTTPException(status_code=400, detail="type trebuie să fie: figuri | motive | personaj")
+{{"asertiune":"aserțiune filozofică/morală 15-25 cuvinte","autor":"autorul aserțiunii","tema":"tema centrală","teza1":"prima teză","argument1":"argumentul","text1":"opera 1: titlu + autor","teza2":"a doua teză distinctă","argument2":"argumentul","text2":"opera 2: titlu + autor","raspunsModel":"plan eseu complet 200 cuvinte: introducere + 2 paragrafe + concluzie"}}"""
 
-    raw = groq(prompt, system="Răspunzi STRICT în JSON valid fără markdown.", temperature=0.4)
+    else:
+        raise HTTPException(status_code=400, detail=f"Tip necunoscut: {req.type}")
+
+    raw = groq(prompt, system=SYS, temperature=0.3, max_tokens=1600)
     clean = re.sub(r"```json|```", "", raw).strip()
     match = re.search(r'\{.*\}', clean, re.DOTALL)
     if not match:
         raise HTTPException(status_code=500, detail="Model nu a returnat JSON valid")
-
-    import json
     try:
         return json.loads(match.group())
     except json.JSONDecodeError as e:
