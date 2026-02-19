@@ -14,43 +14,36 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
-# ─── BAZA DE DATE CU POEZII REALE ─────────────────────────────────────────────
-def load_poezii():
-    """Incarca poezii din poezii.json daca exista, altfel lista de fallback"""
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poezii.json")
-    if os.path.exists(json_path):
+
+# ─── BAZA DE DATE POEZII ──────────────────────────────────────────────────────
+def _load_poems():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "poezii.json")
+    if os.path.exists(path):
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                poems = json.load(f)
-            with_text    = [p for p in poems if p.get("text","").strip()]
-            without_text = [p for p in poems if not p.get("text","").strip()]
-            print(f"[poezii] Incarcate: {len(with_text)} cu text, {len(without_text)} fara text")
-            return with_text, without_text
+            data = json.load(open(path, "r", encoding="utf-8"))
+            ok = [p for p in data if str(p.get("text","")).strip()]
+            print(f"[poezii] {len(ok)} poezii cu text incarcate din {len(data)} total")
+            return ok
         except Exception as e:
-            print(f"[poezii] Eroare la citire: {e}")
-    return [], []
+            print(f"[poezii] eroare la incarcare: {e}")
+    print("[poezii] ATENTIE: poezii.json nu a fost gasit in", os.path.dirname(os.path.abspath(__file__)))
+    return []
 
-POEMS_WITH_TEXT, POEMS_WITHOUT_TEXT = load_poezii()
+_POEMS = _load_poems()
 
-POEMS_FALLBACK = [
-    {"titlu":"Plumb",                          "autor":"George Bacovia",   "motiv":"solitudine / moarte / apasare",        "text":""},
-    {"titlu":"Floare albastra",                "autor":"Mihai Eminescu",   "motiv":"iubire / natura / dor",                "text":""},
-    {"titlu":"Eu nu strivesc corola de minuni","autor":"Lucian Blaga",     "motiv":"mister / cunoastere / lumina",         "text":""},
-    {"titlu":"Testament",                      "autor":"Tudor Arghezi",    "motiv":"creatie / mostenire / cuvantul",       "text":""},
-    {"titlu":"Leoaica tanara, iubirea",        "autor":"Nichita Stanescu", "motiv":"iubire / transfigurare / putere",      "text":""},
-    {"titlu":"Limba noastra",                  "autor":"Alexei Mateevici", "motiv":"limba / identitate / patriotism",      "text":""},
-    {"titlu":"Moartea caprioarei",             "autor":"Nicolae Labis",    "motiv":"moarte / natura / vinovatie",          "text":""},
-]
+def _pick():
+    """Alege o poezie random din baza de date"""
+    if _POEMS:
+        return random.choice(_POEMS)
+    # fallback daca lipseste fisierul
+    return {"titlu":"Plumb","autor":"George Bacovia","text":"Dormeau adanc sicriele de plumb."}
 
-def pick_poem(prefer_text=True):
-    """Alege o poezie aleatorie - prefera cele cu text real"""
-    if prefer_text and POEMS_WITH_TEXT:
-        return random.choice(POEMS_WITH_TEXT)
-    all_poems = POEMS_WITH_TEXT + POEMS_WITHOUT_TEXT
-    if all_poems:
-        return random.choice(all_poems)
-    return random.choice(POEMS_FALLBACK)
-
+def _pick_different(exclude_titlu):
+    """Alege o poezie random diferita de cea data (pentru comparatii)"""
+    pool = [p for p in _POEMS if p.get("titlu") != exclude_titlu]
+    if pool:
+        return random.choice(pool)
+    return _pick()
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "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")
@@ -297,130 +290,207 @@ Feedback în română (5-6 propoziții): puncte forte, ce lipsește, nota 1-10."
 
 @app.post("/bac/generate")
 def bac_generate(req: BACRequest):
-    """Generează exercițiu BAC folosind poezii REALE din poezii.json"""
+    """Genereaza exercitiu BAC din baza de date reala de poezii"""
 
-    SYS = "Ești profesor de română BAC. Răspunzi STRICT în JSON valid, fără markdown, fără text în afara JSON."
+    SYS = "Esti profesor de romana BAC. Raspunzi STRICT in JSON valid, fara markdown, fara text in afara JSON-ului."
+    TASK = req.type
 
-    poem = pick_poem(prefer_text=True)
-    titlu  = poem["titlu"]
-    autor  = poem["autor"]
-    motiv  = poem.get("motiv", "")
-    text   = poem.get("text", "").strip()
+    # ── Alege poezia principala ──────────────────────────────────────────────
+    poem  = _pick()
+    titlu = poem["titlu"]
+    autor = poem["autor"]
+    text  = poem["text"].strip()
 
-    # Dacă avem textul real, îl includem direct în prompt
-    text_context = f"\nTEXTUL REAL AL POEZIEI (folosește EXACT aceste versuri, nu inventa altele):\n\"\"\"\n{text}\n\"\"\"\n" if text else f"\n(Nu avem textul — scrie versuri autentice cunoscute din această operă)\n"
+    # Taiem textul la max 3000 caractere ca sa nu depasim contextul
+    text_trunc = text[:3000]
 
     # ── figuri de stil ────────────────────────────────────────────────────────
-    if req.type == "figuri":
-        prompt = f"""Opera: „{titlu}" de {autor}. Motiv: {motiv}.
-{text_context}
-Generează exercițiu BAC Item 4 — figuri de stil.
-{"Alege 6-10 versuri DIN TEXTUL DE MAI SUS (copiază exact, nu modifica)." if text else "Scrie un fragment autentic de 6-10 versuri din această poezie."}
-Identifică 2-3 figuri de stil reale din fragment.
+    if TASK == "figuri":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza un exercitiu BAC Item 4 (figuri de stil).
+1. Alege un fragment de 4-10 versuri DIN TEXTUL DE MAI SUS (copiaza exact, nu modifica niciun cuvant).
+2. Identifica 2-3 figuri de stil reale din acel fragment.
+3. Pentru fiecare figura explica: cum e construita si ce sugereaza in context.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte","figuri":[{{"figura":"tipul figurii","exemplu":"citatul exact din fragment","structura":"cum e construită (ex: metasemia subst X și Y)","efect":"sugestia contextuală — ce exprimă, ce sentiment"}}]}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte copiate din text","figuri":[{{"figura":"tipul (metafora/epitet/comparatie/personificare/enumeratie)","exemplu":"citatul exact din fragment","structura":"cum e construita (ex: metasemia substantivelor X si Y)","efect":"ce sugereaza / ce sentiment exprima in context"}}]}}'''
 
     # ── motive literare ───────────────────────────────────────────────────────
-    elif req.type == "motive":
-        poem2 = pick_poem(prefer_text=True)
-        while poem2["titlu"] == titlu:
-            poem2 = pick_poem(prefer_text=True)
-        text2 = poem2.get("text","").strip()
-        text2_context = f"\nText real opera 2:\n\"\"\"\n{text2}\n\"\"\"" if text2 else ""
+    elif TASK == "motive":
+        poem2 = _pick_different(titlu)
+        titlu2 = poem2["titlu"]
+        autor2 = poem2["autor"]
+        text2  = poem2["text"].strip()[:1500]
 
-        prompt = f"""Opera 1: „{titlu}" de {autor}. Motiv: {motiv}.
-{text_context}
-Opera 2 pentru comparație: „{poem2['titlu']}" de {poem2['autor']}.{text2_context}
+        prompt = f'''Ai primit doua poezii REALE pentru un exercitiu de comparatie a motivului literar.
 
-Generează exercițiu BAC Item 8 — motiv literar comparativ.
-{"Alege 6-10 versuri DIN TEXTUL REAL AL OPEREI 1." if text else "Scrie fragment autentic din opera 1."}
+POEZIA 1:
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+POEZIA 2 (pentru comparatie):
+TITLU: {titlu2}
+AUTOR: {autor2}
+TEXT:
+"""
+{text2}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 8 — motiv literar comparativ.
+1. Identifica un motiv literar prezent in AMBELE poezii.
+2. Alege un fragment relevant (4-8 versuri exacte) din fiecare poezie.
+3. Explica cum se manifesta motivul in fiecare opera.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte din opera 1","motiv":"{motiv.split('/')[0].strip()}","semnificatieInText":"cum se manifestă motivul (2-3 propoziții)","indiciu":"citatul concret din text","textComparatie":"{poem2['titlu']}","autorComparatie":"{poem2['autor']}","citatComparatie":"{"fragment din textul real al operei 2" if text2 else "fragment autentic din opera 2"}","interpretareComparatie":"cum apare același motiv acolo","raspunsModel":"răspuns model complet 150 cuvinte"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte din poezia 1","motiv":"numele motivului identificat","semnificatieInText":"cum se manifesta motivul in poezia 1 (2-3 propozitii)","indiciu":"citatul concret din text care sustine motivul","textComparatie":"{titlu2}","autorComparatie":"{autor2}","citatComparatie":"versurile exacte din poezia 2","interpretareComparatie":"cum apare acelasi motiv in poezia 2 (2-3 propozitii)","raspunsModel":"raspuns model complet nivel BAC 150 cuvinte: identificare motiv + analiza in ambele texte + concluzie"}}'''
 
     # ── tipul uman ─────────────────────────────────────────────────────────────
-    elif req.type == "tip_uman":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 3 — tipul uman al naratorului/eului liric.
-{"Folosește versuri DIN TEXTUL REAL de mai sus." if text else "Scrie fragment autentic 80-120 cuvinte."}
+    elif TASK == "tip_uman":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 3 — tipul uman al eului liric / naratorului.
+1. Determina tipul uman al vocii poetice pe baza textului.
+2. Alege 2 citate exacte din text care confirma tipologia.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real din operă","tipUman":"tipul uman (tânărul entuziast / artistul debutant / intelectualul lucid / etc.)","citat1":"primul citat real din fragment","comentariu1":"de ce confirmă tipologia","citat2":"al doilea citat real","comentariu2":"comentariu"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"un fragment relevant de 4-8 versuri copiat exact","tipUman":"tipul uman (ex: intelectualul contemplativ / poetul revoltat / omul singuratic / etc.)","citat1":"primul citat exact din text","comentariu1":"de ce confirma tipologia (1-2 propozitii)","citat2":"al doilea citat exact din text","comentariu2":"comentariu (1-2 propozitii)"}}'''
 
     # ── portretul moral ───────────────────────────────────────────────────────
-    elif req.type == "portret":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 5 — portretul moral.
-{"Folosește versuri DIN TEXTUL REAL de mai sus." if text else "Scrie fragment autentic 100-140 cuvinte."}
+    elif TASK == "portret":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 5 — portretul moral al eului liric.
+Alege 2 trasaturi morale clare din text si sustine-le cu citate exacte.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","personaj":"eul liric / personajul","trasatura1":"trăsătură morală 1","exemplu1":"citat real din text","trasatura2":"trăsătură morală 2","exemplu2":"citat real din text","raspunsModel":"portret moral complet 6-7 rânduri"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment relevant de 4-8 versuri copiat exact","personaj":"eul liric / personajul","trasatura1":"prima trasatura morala","exemplu1":"citatul exact din text","trasatura2":"a doua trasatura morala","exemplu2":"citatul exact din text","raspunsModel":"portret moral complet 6-7 randuri nivel BAC"}}'''
 
     # ── starea de spirit ──────────────────────────────────────────────────────
-    elif req.type == "stare_spirit":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 6 — starea de spirit a eului liric.
-{"Alege 6-12 versuri DIN TEXTUL REAL." if text else "Scrie fragment autentic de 6-12 versuri."}
+    elif TASK == "stare_spirit":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 6 — starea de spirit a eului liric.
+Identifica starea dominanta si procedeele prin care e exprimata.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile reale","stare":"starea de spirit (dor/solitudine/alean/melancolie/exuberanță)","modalitate":"procedeul prin care se exprimă","raspunsModel":"interpretare completă 4-6 propoziții"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"6-10 versuri exacte din text care exprima cel mai bine starea","stare":"starea de spirit (dor / solitudine / melancolie / angoasa / exuberanta / revolta)","modalitate":"procedeele artistice prin care se exprima (figuri, imagini, lexic, ritm)","raspunsModel":"interpretare completa 4-6 propozitii nivel BAC"}}'''
 
-    # ── atitudinea personajelor ───────────────────────────────────────────────
-    elif req.type == "atitudine":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 7 — atitudinea personajelor.
-{"Folosește text DIN FRAGMENTUL REAL de mai sus." if text else "Scrie fragment autentic de proză 130-170 cuvinte."}
+    # ── atitudinea ────────────────────────────────────────────────────────────
+    elif TASK == "atitudine":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 7 — atitudinea eului liric / personajului.
+Identifica atitudinea fata de un element (natura, iubire, moarte, societate etc.) cu 2 citate exacte.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","protagonist":"personajul central sau eul liric","atitudine":"atitudinea (dezaprobare/invidie/admirație/ostilitate)","citat1":"citat real din fragment","comentariu1":"1-2 propoziții","citat2":"al doilea citat real","comentariu2":"1-2 propoziții","raspunsModel":"răspuns complet 6-7 rânduri"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment relevant de 4-8 versuri copiat exact","protagonist":"eul liric","atitudine":"atitudinea (veneratie / revolta / melancolie / resemnare / admiratie / deznadejde)","citat1":"primul citat exact din text","comentariu1":"ce sugereaza (1-2 propozitii)","citat2":"al doilea citat exact din text","comentariu2":"1-2 propozitii","raspunsModel":"raspuns complet 6-7 randuri nivel BAC"}}'''
 
     # ── sinonim contextual ────────────────────────────────────────────────────
-    elif req.type == "sinonim":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 1 — sinonim contextual.
-{"Alege o frază DIN TEXTUL REAL." if text else "Alege o frază autentică din operă."}
+    elif TASK == "sinonim":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 1 — sinonim contextual.
+Alege un cuvant din text care are sens contextual specific (nu sens uzual).
+Propune 5 sinonime posibile si indica care e cel mai potrivit in context.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fraza reală 15-25 cuvinte","cuvant":"cuvântul țintă din frază","sinonime":["sin1","sin2","sin3","sin4","sin5"],"corect":"sinonimul cel mai potrivit contextual","raspunsModel":"enunț argumentativ model"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fraza/versul exact din text care contine cuvantul","cuvant":"cuvantul ales","sinonime":["sin1","sin2","sin3","sin4","sin5"],"corect":"sinonimul cel mai potrivit contextual","raspunsModel":"enunt argumentativ model: de ce acel sinonim si nu altele"}}'''
 
-    # ── alt sens ──────────────────────────────────────────────────────────────
-    elif req.type == "sens":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 2 — alt sens al cuvântului.
-{"Alege un fragment DIN TEXTUL REAL cu 3 cuvinte polisemantice." if text else "Alege fragment autentic 3-5 propoziții."}
+    # ── alt sens ─────────────────────────────────────────────────────────────
+    elif TASK == "sens":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
 
-STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment real","cuvinte":["cuv1","cuv2","cuv3"],"sensInText":{{"cuv1":"sensul din text","cuv2":"sensul din text","cuv3":"sensul din text"}},"raspunsModel":{{"cuv1":"enunț cu alt sens","cuv2":"enunț cu alt sens","cuv3":"enunț cu alt sens"}}}}"""
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
 
-    # ── valoarea punctuației ──────────────────────────────────────────────────
-    elif req.type == "punctuatie":
-        prompt = f"""Opera: „{titlu}" de {autor}.
-{text_context}
-Generează exercițiu BAC Item 9 — valoarea stilistică a punctuației.
-{"Alege secvență DIN TEXTUL REAL cu semne de exclamare și/sau întrebare." if text else "Alege secvență autentică cu semne de punctuație cu valoare stilistică."}
+Sarcina: genereaza exercitiu BAC Item 2 — alt sens al cuvantului.
+Alege 3 cuvinte polisemantice din text. Pentru fiecare: explica sensul din text si construieste un enunt cu un alt sens al aceluiasi cuvant.
 
 STRICT JSON:
-{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","secventa":"secvența reală cu semne de punctuație","semn1":"!","tip1":"exclamativ","valoare1":"ce exprimă","semn2":"?","tip2":"interogativ retoric","valoare2":"ce exprimă","raspunsModel":"răspuns în 2 enunțuri dezvoltate per semn"}}"""
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"un fragment de 3-5 versuri copiat exact","cuvinte":["cuv1","cuv2","cuv3"],"sensInText":{{"cuv1":"sensul cuvantului in poem","cuv2":"sensul in poem","cuv3":"sensul in poem"}},"raspunsModel":{{"cuv1":"enunt cu alt sens corect","cuv2":"enunt cu alt sens corect","cuv3":"enunt cu alt sens corect"}}}}'''
+
+    # ── valoarea punctuatiei ──────────────────────────────────────────────────
+    elif TASK == "punctuatie":
+        prompt = f'''Ai primit urmatoarea poezie REALA:
+
+TITLU: {titlu}
+AUTOR: {autor}
+TEXT:
+"""
+{text_trunc}
+"""
+
+Sarcina: genereaza exercitiu BAC Item 9 — valoarea stilistica a punctuatiei.
+Alege din text o secventa care contine semne de punctuatie cu valoare expresiva (!, ?, —, ...).
+Explica valoarea stilistica a fiecarui semn.
+
+STRICT JSON:
+{{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","secventa":"secventa exacta din text cu semnele de punctuatie","semn1":"semnul (! sau ? sau — sau ...)","tip1":"tipul enuntului sau functia","valoare1":"ce exprima in context (certitudine/indignare/ironie/suspans/pauza meditativa)","semn2":"al doilea semn daca exista","tip2":"tipul","valoare2":"ce exprima","raspunsModel":"2 enunturi dezvoltate per semn, nivel BAC"}}'''
 
     # ── eseu argumentativ ─────────────────────────────────────────────────────
-    elif req.type == "personaj":
-        prompt = f"""Generează exercițiu BAC Item 12 — eseu argumentativ.
-Inspiră-te din tema operei „{titlu}" de {autor} (motiv: {motiv}).
+    elif TASK == "personaj":
+        prompt = f'''Genereaza un exercitiu BAC Item 12 — eseu argumentativ.
+Creeaza o asertiune filozofica/morala inspirata din tema poeziei „{titlu}" de {autor}.
+Asertiuna trebuie sa fie generala (nu despre aceasta poezie) si sa permita argumentare cu 2 opere literare.
 
 STRICT JSON:
-{{"asertiune":"aserțiune filozofică/morală 15-25 cuvinte","autor":"autorul aserțiunii","tema":"tema centrală","teza1":"prima teză","argument1":"argumentul","text1":"opera 1: titlu + autor","teza2":"a doua teză distinctă","argument2":"argumentul","text2":"opera 2: titlu + autor","raspunsModel":"plan eseu complet 200 cuvinte: introducere + 2 paragrafe + concluzie"}}"""
+{{"asertiune":"asertiunea filozofica/morala 15-25 cuvinte","autor":"autorul asertinutii (filosof/scriitor cunoscut)","tema":"tema centrala a eseului","teza1":"prima teza (o idee de aparat)","argument1":"argumentul pentru teza 1","text1":"opera literara 1 — titlu + autor","teza2":"a doua teza distincta","argument2":"argumentul pentru teza 2","text2":"opera literara 2 — titlu + autor","raspunsModel":"plan complet eseu 200 cuvinte: introducere (explica asertiunea) + teza1+arg+exemplu + teza2+arg+exemplu + concluzie"}}'''
 
     else:
-        raise HTTPException(status_code=400, detail=f"Tip necunoscut: {req.type}")
+        raise HTTPException(status_code=400, detail=f"Tip necunoscut: {TASK}")
 
-    raw = groq(prompt, system=SYS, temperature=0.3, max_tokens=1600)
+    raw   = groq(prompt, system=SYS, temperature=0.3, max_tokens=1600)
     clean = re.sub(r"```json|```", "", raw).strip()
     match = re.search(r'\{.*\}', clean, re.DOTALL)
     if not match:
