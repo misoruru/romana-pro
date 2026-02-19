@@ -303,6 +303,8 @@ def bac_generate(req: BACRequest):
 
     # Taiem textul la max 3000 caractere ca sa nu depasim contextul
     text_trunc = text[:3000]
+    # Textul complet al poeziei pentru frontend (/ inlocuit cu newline)
+    poem_full_text = text.replace("/", "\n")
 
     # ── figuri de stil ────────────────────────────────────────────────────────
     if TASK == "figuri":
@@ -319,6 +321,7 @@ Sarcina: genereaza un exercitiu BAC Item 4 (figuri de stil).
 1. Alege un fragment de 4-10 versuri DIN TEXTUL DE MAI SUS (copiaza exact, nu modifica niciun cuvant).
 2. Identifica 2-3 figuri de stil reale din acel fragment.
 3. Pentru fiecare figura explica: cum e construita si ce sugereaza in context.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte copiate din text","figuri":[{{"figura":"tipul (metafora/epitet/comparatie/personificare/enumeratie)","exemplu":"citatul exact din fragment","structura":"cum e construita (ex: metasemia substantivelor X si Y)","efect":"ce sugereaza / ce sentiment exprima in context"}}]}}'''
@@ -349,9 +352,10 @@ TEXT:
 """
 
 Sarcina: genereaza exercitiu BAC Item 8 — motiv literar comparativ.
-1. Identifica un motiv literar prezent in AMBELE poezii.
-2. Alege un fragment relevant (4-8 versuri exacte) din fiecare poezie.
+1. Identifica un motiv literar prezent in AMBELE poezii (un singur cuvant sau sintagma scurta).
+2. Alege un fragment relevant (4-8 versuri exacte, nemodificate) din fiecare poezie.
 3. Explica cum se manifesta motivul in fiecare opera.
+IMPORTANT: Nu modifica textul poeziilor in niciun fel. Copiaza versurile exact cum sunt.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"versurile exacte din poezia 1","motiv":"numele motivului identificat","semnificatieInText":"cum se manifesta motivul in poezia 1 (2-3 propozitii)","indiciu":"citatul concret din text care sustine motivul","textComparatie":"{titlu2}","autorComparatie":"{autor2}","citatComparatie":"versurile exacte din poezia 2","interpretareComparatie":"cum apare acelasi motiv in poezia 2 (2-3 propozitii)","raspunsModel":"raspuns model complet nivel BAC 150 cuvinte: identificare motiv + analiza in ambele texte + concluzie"}}'''
@@ -370,6 +374,7 @@ TEXT:
 Sarcina: genereaza exercitiu BAC Item 3 — tipul uman al eului liric / naratorului.
 1. Determina tipul uman al vocii poetice pe baza textului.
 2. Alege 2 citate exacte din text care confirma tipologia.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"un fragment relevant de 4-8 versuri copiat exact","tipUman":"tipul uman (ex: intelectualul contemplativ / poetul revoltat / omul singuratic / etc.)","citat1":"primul citat exact din text","comentariu1":"de ce confirma tipologia (1-2 propozitii)","citat2":"al doilea citat exact din text","comentariu2":"comentariu (1-2 propozitii)"}}'''
@@ -387,6 +392,7 @@ TEXT:
 
 Sarcina: genereaza exercitiu BAC Item 5 — portretul moral al eului liric.
 Alege 2 trasaturi morale clare din text si sustine-le cu citate exacte.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment relevant de 4-8 versuri copiat exact","personaj":"eul liric / personajul","trasatura1":"prima trasatura morala","exemplu1":"citatul exact din text","trasatura2":"a doua trasatura morala","exemplu2":"citatul exact din text","raspunsModel":"portret moral complet 6-7 randuri nivel BAC"}}'''
@@ -404,6 +410,7 @@ TEXT:
 
 Sarcina: genereaza exercitiu BAC Item 6 — starea de spirit a eului liric.
 Identifica starea dominanta si procedeele prin care e exprimata.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"6-10 versuri exacte din text care exprima cel mai bine starea","stare":"starea de spirit (dor / solitudine / melancolie / angoasa / exuberanta / revolta)","modalitate":"procedeele artistice prin care se exprima (figuri, imagini, lexic, ritm)","raspunsModel":"interpretare completa 4-6 propozitii nivel BAC"}}'''
@@ -421,6 +428,7 @@ TEXT:
 
 Sarcina: genereaza exercitiu BAC Item 7 — atitudinea eului liric / personajului.
 Identifica atitudinea fata de un element (natura, iubire, moarte, societate etc.) cu 2 citate exacte.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fragment relevant de 4-8 versuri copiat exact","protagonist":"eul liric","atitudine":"atitudinea (veneratie / revolta / melancolie / resemnare / admiratie / deznadejde)","citat1":"primul citat exact din text","comentariu1":"ce sugereaza (1-2 propozitii)","citat2":"al doilea citat exact din text","comentariu2":"1-2 propozitii","raspunsModel":"raspuns complet 6-7 randuri nivel BAC"}}'''
@@ -439,6 +447,7 @@ TEXT:
 Sarcina: genereaza exercitiu BAC Item 1 — sinonim contextual.
 Alege un cuvant din text care are sens contextual specific (nu sens uzual).
 Propune 5 sinonime posibile si indica care e cel mai potrivit in context.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"fraza/versul exact din text care contine cuvantul","cuvant":"cuvantul ales","sinonime":["sin1","sin2","sin3","sin4","sin5"],"corect":"sinonimul cel mai potrivit contextual","raspunsModel":"enunt argumentativ model: de ce acel sinonim si nu altele"}}'''
@@ -456,6 +465,7 @@ TEXT:
 
 Sarcina: genereaza exercitiu BAC Item 2 — alt sens al cuvantului.
 Alege 3 cuvinte polisemantice din text. Pentru fiecare: explica sensul din text si construieste un enunt cu un alt sens al aceluiasi cuvant.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","fragment":"un fragment de 3-5 versuri copiat exact","cuvinte":["cuv1","cuv2","cuv3"],"sensInText":{{"cuv1":"sensul cuvantului in poem","cuv2":"sensul in poem","cuv3":"sensul in poem"}},"raspunsModel":{{"cuv1":"enunt cu alt sens corect","cuv2":"enunt cu alt sens corect","cuv3":"enunt cu alt sens corect"}}}}'''
@@ -474,6 +484,7 @@ TEXT:
 Sarcina: genereaza exercitiu BAC Item 9 — valoarea stilistica a punctuatiei.
 Alege din text o secventa care contine semne de punctuatie cu valoare expresiva (!, ?, —, ...).
 Explica valoarea stilistica a fiecarui semn.
+IMPORTANT: Nu modifica si nu rescrie textul poeziei in niciun fel.
 
 STRICT JSON:
 {{"titlu":"{titlu}","autor":"{autor}","sursa":"{titlu} — {autor}","secventa":"secventa exacta din text cu semnele de punctuatie","semn1":"semnul (! sau ? sau — sau ...)","tip1":"tipul enuntului sau functia","valoare1":"ce exprima in context (certitudine/indignare/ironie/suspans/pauza meditativa)","semn2":"al doilea semn daca exista","tip2":"tipul","valoare2":"ce exprima","raspunsModel":"2 enunturi dezvoltate per semn, nivel BAC"}}'''
@@ -496,7 +507,12 @@ STRICT JSON:
     if not match:
         raise HTTPException(status_code=500, detail="Model nu a returnat JSON valid")
     try:
-        return json.loads(match.group())
+        result = json.loads(match.group())
+        # Adaugam textul complet al poeziei (cu / inlocuit cu newline)
+        result["poem_full_text"] = poem_full_text
+        result["poem_titlu"] = titlu
+        result["poem_autor"] = autor
+        return result
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"JSON error: {e}")
 
